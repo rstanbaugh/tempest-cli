@@ -1,83 +1,35 @@
-# Tempest CLI
+# Tempest CLI (WeatherFlow / Tempest)
 
-A single-file command-line tool for retrieving **current conditions** and **forecast data** from a Tempest (WeatherFlow) weather station.
+A single-file command-line tool for retrieving **current conditions** and **forecast data** from a Tempest (WeatherFlow) weather station using the Better Forecast endpoint.
 
 This tool is designed to:
 
-- Run locally as a deterministic CLI  
-- Be called by OpenClaw skills  
-- Produce stable, predictable stdout  
-- Contain all business logic (no logic in skills)  
+- Run locally as a deterministic CLI
+- Be called by OpenClaw skills
+- Produce stable, predictable stdout
+- Contain all business logic (no logic inside skills)
 
-All output is normalized to:
+All output units are normalized to:
 
-- Temperature → °F  
-- Wind → mph  
-- Pressure → inHg  
-- Precipitation → inches  
-- Distance → miles  
+- Temperature → °F
+- Wind → mph
+- Pressure → inHg
+- Precipitation → inches
+- Distance → miles
 
 ---
 
-# Repository Structure
+# Repository Location
 
-Recommended location:
+Recommended path:
 
 ~/.openclaw/workspace/tools/tempest
 
-Files:
+Primary file:
 
-- tempest-cli.py  
-- README.md  
-- .gitignore  
+tempest-cli.py
 
-This repository contains only the CLI tool.  
-No wrapper files are stored here.
-
----
-
-# Installation
-
-## 1) Create a wrapper in ~/bin
-
-```
-ENV_FILE="$HOME/.openclaw/.env"
-if [[ -f "$ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
-fi
-PY="${OPENCLAW_PY:-python3}"
-```
-
-## 2) Make the CLI executable
-
-chmod +x ~/.openclaw/workspace/tools/tempest/tempest-cli.py
-
-## 3) ~/bin as the first entry in PATH.
-
-Execute from anywhere:
-
-tempest-cli current  
-tempest-cli forecast  
-
----
-
-# Wrapper Explanation
-
-~/bin/tempest-cli is a symbolic link pointing to:
-
-~/.openclaw/workspace/tools/tempest/tempest-cli.py
-
-This design:
-
-- Keeps the source version-controlled  
-- Avoids hard-coded Python interpreter paths  
-- Allows updating the tool without touching ~/bin  
-- Keeps machine-specific configuration out of Git  
-
-The wrapper is not committed to the repository because it contains a user-specific absolute path and lives outside the repo root.
+This is a standalone executable Python script.
 
 ---
 
@@ -86,25 +38,46 @@ The wrapper is not committed to the repository because it contains a user-specif
 These must be set in your environment.
 
 Recommended location:
-
-~/.openclaw/.env
+~/.openclaw/.env  
+(Loaded automatically if present)
 
 Minimum required:
 
-TEMPEST_API_KEY=your_api_key_here
-
-Recommended:
-
+TEMPEST_API_KEY=your_api_key_here  
 TEMPEST_STATION_ID=161526
-
-If forecast requires token-based access in your account:
-
-TEMPEST_TOKEN=your_token  
-TEMPEST_DEVICE_ID=your_device_id  
 
 Optional:
 
-TEMPEST_BASE_URL=https://swd.weatherflow.com  
+TEMPEST_TIMEOUT_S=8
+
+Notes:
+
+- TEMPEST_API_KEY is your Tempest personal access token.
+- TEMPEST_STATION_ID is your physical station ID.
+- No token-based auth is required beyond TEMPEST_API_KEY.
+- The CLI only supports reading data from your own station.
+
+---
+
+# Installation (Wrapper in ~/bin)
+
+This project intentionally does NOT install as a Python package.
+Instead, we use a simple symlink wrapper in ~/bin.
+
+Ensure ~/bin is first in your PATH.
+
+From your OpenClaw machine:
+
+mkdir -p ~/bin  
+chmod +x "$HOME/.openclaw/workspace/tools/tempest/tempest-cli.py"  
+ln -sf "$HOME/.openclaw/workspace/tools/tempest/tempest-cli.py" "$HOME/bin/tempest-cli"
+
+Verify:
+
+which tempest-cli  
+tempest-cli --help
+
+The wrapper (~/bin/tempest-cli) is a symlink and should NOT be committed to git.
 
 ---
 
@@ -112,87 +85,126 @@ TEMPEST_BASE_URL=https://swd.weatherflow.com
 
 ## Current Conditions
 
-tempest-cli current
-
-Example output:
-
-The current conditions at your house are:  
-Temperature: 51.1 °F  
-Wind: 7 mph N  
-Humidity: 60 %  
-Pressure: 29.82 inHg  
-Precipitation: 0.00 in  
-Sunrise: 7:10 AM  
-Sunset: 6:21 PM  
-Updated: 3:00:29 PM  2/28/2026  
-
-Raw mode (no header):
-
+tempest-cli current  
 tempest-cli current --raw  
-
-JSON mode:
-
 tempest-cli current --json  
+
+Default output includes:
+
+- Temperature
+- Wind Chill
+- Wind
+- Humidity
+- Pressure
+- Precipitation
+- UV Index
+- Sunrise
+- Sunset
+- Updated timestamp (always last line)
 
 ---
 
 ## Forecast
 
+By default, forecast returns BOTH daily and hourly sections:
+
 tempest-cli forecast  
 
-Default behavior:
-
-- Shows Daily section  
-- Shows Hourly section  
-- Updated timestamp is always the last line  
-
-Daily only:
-
-tempest-cli forecast --daily  
-
-Hourly only:
-
-tempest-cli forecast --hourly  
-
-Limit output:
-
-tempest-cli forecast --days 10 --hours 12  
-
-Raw output:
-
 tempest-cli forecast --raw  
-
-JSON output:
-
 tempest-cli forecast --json  
 
 ---
 
-# Output Guarantees
+### Daily Only
 
-- Updated: is always the final line.  
-- No debug markers.  
-- Raw mode emits only data lines.  
-- JSON mode emits the complete API response.  
+tempest-cli forecast --daily  
+tempest-cli forecast --daily --raw  
+tempest-cli forecast --daily --json  
 
-This makes the tool safe for OpenClaw skills that return stdout verbatim.
+Daily output shows 10 days, labeled as:
+
+Sat 28  
+Sun 1  
+Mon 2  
+etc.
+
+Each line formatted:
+
+Sat 28: High 50° / Low 25° — Snow Likely
+
+---
+
+### Hourly Only
+
+tempest-cli forecast --hourly  
+tempest-cli forecast --hourly --raw  
+tempest-cli forecast --hourly --json  
+
+Hourly output shows 12 hours formatted as:
+
+5 PM: 39° 7 mph N — Partly Cloudy
+
+---
+
+# Output Modes
+
+Default:
+Includes a descriptive first line such as:
+
+The current conditions at your house are:  
+The forecast at your house is:
+
+--raw:
+Removes the descriptive header.
+Best mode for OpenClaw skills.
+
+--json:
+Prints the full raw API JSON response.
+
+In all non-JSON modes:
+The final line is always:
+
+Updated: HH:MM:SS AM/PM  M/D/YYYY
+
+---
+
+# Design Decisions
+
+- Single-file CLI
+- No package structure required
+- No __init__.py
+- No token-based alternate auth
+- No temperature re-conversion (API units are forced via query parameters)
+- All formatting handled inside the CLI
+- Skills should simply execute and return stdout
 
 ---
 
 # Git Workflow
 
-Initialize locally:
+From the tempest directory:
 
 cd ~/.openclaw/workspace/tools/tempest  
 git init  
 git add .  
 git commit -m "Initial Tempest CLI"  
 
-Then create a remote repository and push:
+Then create a remote repo and push:
 
-git remote add origin git@github.com:<yourname>/tempest-cli.git  
+git remote add origin <your-repo-url>  
 git push -u origin main  
+
+Do NOT commit ~/bin/tempest-cli (the symlink wrapper).
 
 ---
 
-If anything in this still isn’t formatted the way you want for GitHub rendering, tell me exactly what you want changed and I’ll adjust it — cleanly and once.
+# Philosophy
+
+All custom logic belongs in CLI tools.  
+OpenClaw skills should act only as orchestration layers that:
+
+- Decide which tool to call
+- Execute the CLI
+- Return stdout directly
+
+This keeps the system scalable and deterministic.
