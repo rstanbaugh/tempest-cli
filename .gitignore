@@ -1,13 +1,18 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+# OS/editor
 .DS_Store
+.vscode/
+.idea/
 
-# local debug output
-*.debug.txt
-debug.txt
-
-# local env files (keep secrets out of repos)
+# Local env / secrets
 .env
+*.env
+
+# Logs / scratch
+*.log
+debug.txt

@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """
-tempest-cli.py — Tempest (WeatherFlow) home weather tool
+Tempest CLI
 
-Commands:
-  tempest-cli current [--raw|--json]
-  tempest-cli forecast [--raw|--json] [--days N] [--hours N]
+Single-file CLI for fetching:
+- current conditions (Tempest better_forecast current_conditions)
+- forecast (better_forecast daily + hourly)
 
-Notes:
-- The Tempest REST API returns metric SI units; we convert for display.  (C→F, m/s→mph, mb→inHg, mm→in)
-- API key is read from environment: TEMPEST_API_KEY
-- Station ID defaults to env TEMPEST_STATION_ID, else hardcoded fallback.
-
-Exit codes:
-  0 ok
-  2 usage / unknown command
-  3 missing config
-  4 network/api error
+Design goals:
+- deterministic stdout for skill consumption
+- no hard-coded paths (everything via env + wrapper)
+- supports: current/forecast + modifiers: --raw, --json, --daily, --hourly, --days N, --hours N
 """
 
 from __future__ import annotations
@@ -24,371 +18,414 @@ import argparse
 import json
 import os
 import sys
-import time
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
-# -----------------------------
-# Config (NO hard-coded paths)
-# -----------------------------
+# ----------------------------
+# Formatting helpers
+# ----------------------------
 
-DEFAULT_STATION_ID = "161526"
-
-API_KEY_ENV = "TEMPEST_API_KEY"
-STATION_ID_ENV = "TEMPEST_STATION_ID"
-
-# Optional: if you want the tool itself to load dotenv in dev, set TEMPEST_DOTENV=/path/to/.env
-DOTENV_PATH_ENV = "TEMPEST_DOTENV"
+RED = "\033[31m"
+RESET = "\033[0m"
 
 
-# -----------------------------
-# Small helpers
-# -----------------------------
-
-ANSI_RED = "\033[31m"
-ANSI_RESET = "\033[0m"
-
-
-def eprint(*args: Any) -> None:
-    print(*args, file=sys.stderr)
-
-
-def local_stamp() -> str:
-    # Example: 3:00:29 PM  2/28/2026 (macOS supports %-m etc; keep portable)
-    now = datetime.now().astimezone()
-    # Portable “no leading zero” formatting:
-    t = now.strftime("%I:%M:%S %p").lstrip("0")
-    m = now.strftime("%m").lstrip("0")
-    d = now.strftime("%d").lstrip("0")
-    y = now.strftime("%Y")
-    return f"{t}  {m}/{d}/{y}"
-
-
-def c_to_f(c: float) -> float:
-    return (c * 9.0 / 5.0) + 32.0
-
-
-def ms_to_mph(ms: float) -> float:
-    return ms * 2.2369362920544
-
-
-def mb_to_inhg(mb: float) -> float:
-    return mb * 0.029529983071445
-
-
-def mm_to_in(mm: float) -> float:
-    return mm * 0.039370078740157
-
-
-def degrees_to_compass(deg: float) -> str:
-    # 16-wind compass
-    idx = int((deg / 22.5) + 0.5)
-    dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
-    return dirs[idx % 16]
-
-
-def load_dotenv_if_configured() -> None:
-    path = os.getenv(DOTENV_PATH_ENV)
-    if not path:
-        return
+def _now_local_stamp() -> str:
+    # Example: 4:04:19 PM  2/28/2026
     try:
-        # Optional dependency
-        from dotenv import load_dotenv  # type: ignore
+        return datetime.now().astimezone().strftime("%-I:%M:%S %p  %-m/%-d/%Y")
     except Exception:
-        return
+        s = datetime.now().astimezone().strftime("%I:%M:%S %p  %m/%d/%Y")
+        return s.lstrip("0").replace("/0", "/")
+
+
+def _fmt_time_hm(epoch_s: Optional[int]) -> Optional[str]:
+    if epoch_s is None:
+        return None
     try:
-        if os.path.exists(path):
-            load_dotenv(path, override=False)
+        dt = datetime.fromtimestamp(int(epoch_s)).astimezone()
+        try:
+            return dt.strftime("%-I:%M %p")
+        except Exception:
+            return dt.strftime("%I:%M %p").lstrip("0")
     except Exception:
-        pass
+        return None
 
 
-def get_api_key() -> Optional[str]:
-    load_dotenv_if_configured()
-    return os.getenv(API_KEY_ENV)
+def _day_label_from_epoch(epoch_s: Optional[int]) -> str:
+    # "Sun 1"
+    if epoch_s is None:
+        return "Day"
+    dt = datetime.fromtimestamp(int(epoch_s)).astimezone()
+    return f"{dt.strftime('%a')} {dt.day}"
 
 
-def get_station_id() -> str:
-    load_dotenv_if_configured()
-    return os.getenv(STATION_ID_ENV, DEFAULT_STATION_ID)
+def _mph_from_mps(mps: float) -> float:
+    return mps * 2.2369362920544
 
 
-# -----------------------------
-# HTTP
-# -----------------------------
-
-@dataclass
-class FetchResult:
-    json_data: Dict[str, Any]
-    elapsed_ms: int
+def _inhg_from_mb(mb: float) -> float:
+    return mb * 0.0295299830714
 
 
-def http_get_json(url: str, timeout_s: float = 5.0) -> FetchResult:
-    started = time.time()
-    r = requests.get(url, timeout=timeout_s)
-    r.raise_for_status()
-    data = r.json()
-    elapsed_ms = int((time.time() - started) * 1000)
-    if not isinstance(data, dict):
-        raise ValueError("API returned non-object JSON")
-    return FetchResult(json_data=data, elapsed_ms=elapsed_ms)
+def _in_from_mm(mm: float) -> float:
+    return mm / 25.4
 
 
-def tempest_station_observations_url(station_id: str, api_key: str) -> str:
-    return f"https://swd.weatherflow.com/swd/rest/observations/station/{station_id}?api_key={api_key}"
+def _deg_to_cardinal(deg: float) -> str:
+    directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    try:
+        val = int((deg / 22.5) + 0.5)
+        return directions[val % 16]
+    except Exception:
+        return "N"
 
 
-def tempest_better_forecast_url(station_id: str, api_key: str) -> str:
-    # The “better_forecast” endpoint returns current + hourly + daily in one response.
-    return f"https://swd.weatherflow.com/swd/rest/better_forecast?station_id={station_id}&api_key={api_key}"
+def _coerce_float(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
 
 
-# -----------------------------
-# Formatting: CURRENT
-# -----------------------------
-
-def format_current_from_observations(data: Dict[str, Any]) -> list[str]:
-    obs = data.get("obs") or []
-    if not obs or not isinstance(obs, list):
-        raise ValueError("No observation data available.")
-
-    latest = obs[-1]
-    if not isinstance(latest, dict):
-        raise ValueError("Invalid observation format.")
-
-    lines: list[str] = []
-
-    # The REST API uses metric SI; convert for display.  [oai_citation:1‡The Tempest Weather Community](https://community.tempest.earth/t/converting-units-of-measure/16760?utm_source=chatgpt.com)
-    if "air_temperature" in latest:
-        lines.append(f"Temperature: {c_to_f(float(latest['air_temperature'])):.1f} °F")
-
-    if "wind_chill" in latest:
-        lines.append(f"Wind Chill: {c_to_f(float(latest['wind_chill'])):.1f} °F")
-
-    if "wind_avg" in latest:
-        mph = ms_to_mph(float(latest["wind_avg"]))
-        wind_dir = degrees_to_compass(float(latest.get("wind_direction", 0.0)))
-        lines.append(f"Wind: {mph:.1f} mph {wind_dir}")
-
-    if "relative_humidity" in latest:
-        lines.append(f"Humidity: {float(latest['relative_humidity']):.0f} %")
-
-    if "barometric_pressure" in latest:
-        lines.append(f"Pressure: {mb_to_inhg(float(latest['barometric_pressure'])):.2f} inHg")
-
-    if "precip" in latest:
-        lines.append(f"Precipitation: {mm_to_in(float(latest['precip'])):.2f} in")
-
-    if "uv" in latest:
-        lines.append(f"UV Index: {float(latest['uv']):.1f}")
-
-    return lines
+def _coerce_int(v: Any) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        return int(v)
+    except Exception:
+        return None
 
 
-# -----------------------------
-# Formatting: FORECAST
-# -----------------------------
+# ----------------------------
+# Env + URL helpers
+# ----------------------------
 
-def _safe_get(d: Dict[str, Any], key: str, default: Any = None) -> Any:
-    v = d.get(key, default)
-    return v
-
-
-def format_forecast_from_better_forecast(
-    data: Dict[str, Any],
-    days: int = 10,
-    hours: int = 12,
-) -> list[str]:
-    """
-    We produce:
-      - Daily forecast: next N days
-      - Hourly forecast: next N hours
-    Then add Updated: ... as last line.
-    """
-    lines: list[str] = []
-
-    # Structures vary slightly; keep it defensive.
-    forecast = data.get("forecast") or data
-
-    daily = None
-    hourly = None
-
-    if isinstance(forecast, dict):
-        daily = forecast.get("daily")
-        hourly = forecast.get("hourly")
-
-    if not isinstance(daily, list) and isinstance(forecast, dict):
-        # Some shapes use "days"/"hours" keys, keep fallback
-        daily = forecast.get("days")
-        hourly = forecast.get("hours")
-
-    if not isinstance(daily, list):
-        daily = []
-    if not isinstance(hourly, list):
-        hourly = []
-
-    # Daily
-    lines.append("Daily:")
-    for i, day in enumerate(daily[: max(0, days)]):
-        if not isinstance(day, dict):
-            continue
-        # try to find a label/date
-        day_name = _safe_get(day, "day_name") or _safe_get(day, "dow") or f"Day {i+1}"
-        cond = _safe_get(day, "conditions") or _safe_get(day, "icon") or "—"
-        # temps commonly in C
-        t_hi_c = _safe_get(day, "air_temp_high")
-        t_lo_c = _safe_get(day, "air_temp_low")
-
-        parts = [f"{day_name}:"]
-        if t_hi_c is not None and t_lo_c is not None:
-            parts.append(f"High {c_to_f(float(t_hi_c)):.0f}° / Low {c_to_f(float(t_lo_c)):.0f}°")
-        elif t_lo_c is not None:
-            parts.append(f"Low {c_to_f(float(t_lo_c)):.0f}°")
-        parts.append(f"— {cond}")
-        lines.append(" ".join(parts))
-
-    # Hourly
-    lines.append("")
-    lines.append("Hourly:")
-    for hr in hourly[: max(0, hours)]:
-        if not isinstance(hr, dict):
-            continue
-        # time
-        # Many payloads provide "time" as unix seconds.
-        ts = _safe_get(hr, "time")
-        label = None
-        if isinstance(ts, (int, float)):
-            label = datetime.fromtimestamp(float(ts)).astimezone().strftime("%-I %p") if sys.platform != "win32" else datetime.fromtimestamp(float(ts)).astimezone().strftime("%I %p").lstrip("0")
-        else:
-            label = _safe_get(hr, "hour") or "Hour"
-
-        cond = _safe_get(hr, "conditions") or _safe_get(hr, "icon") or "—"
-        t_c = _safe_get(hr, "air_temperature")
-        wind_ms = _safe_get(hr, "wind_avg") or _safe_get(hr, "wind_speed")
-        wind_dir_deg = _safe_get(hr, "wind_direction", 0.0)
-
-        bits = [f"{label}:"]
-        if t_c is not None:
-            bits.append(f"{c_to_f(float(t_c)):.0f}°")
-        if wind_ms is not None:
-            bits.append(f"{ms_to_mph(float(wind_ms)):.0f} mph {degrees_to_compass(float(wind_dir_deg))}")
-        bits.append(f"— {cond}")
-        lines.append(" ".join(bits))
-
-    return lines
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    val = os.getenv(name)
+    if val is None or val == "":
+        return default
+    return val
 
 
-# -----------------------------
-# CLI
-# -----------------------------
+def _required_env(name: str) -> str:
+    val = _env(name)
+    if not val:
+        raise RuntimeError(f"{name} is not set.")
+    return val
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="tempest-cli",
-        add_help=True,
-        description="Tempest home weather tool (current conditions and forecast).",
-        formatter_class=argparse.RawTextHelpFormatter,
+
+def _station_id() -> int:
+    raw = _env("TEMPEST_STATION_ID", "161526")
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except Exception:
+        raise RuntimeError("TEMPEST_STATION_ID must be an integer.")
+
+
+def _base_url() -> str:
+    return (_env("TEMPEST_BASE_URL", "https://swd.weatherflow.com") or "https://swd.weatherflow.com").rstrip("/")
+
+
+def _better_forecast_url_with_api_key(station_id: int, api_key: str) -> str:
+    # Force units so we don't do client-side unit guessing.
+    return (
+        f"{_base_url()}/swd/rest/better_forecast"
+        f"?station_id={station_id}"
+        f"&api_key={api_key}"
+        f"&units_temp=f"
+        f"&units_wind=mph"
+        f"&units_pressure=inhg"
+        f"&units_precip=in"
+        f"&units_distance=mi"
     )
 
-    sub = parser.add_subparsers(dest="command")
 
-    def add_common_flags(p: argparse.ArgumentParser) -> None:
-        g = p.add_mutually_exclusive_group()
-        g.add_argument("--raw", action="store_true", help="Raw text only (no leading sentence).")
-        g.add_argument("--json", action="store_true", help="Dump raw API JSON.")
-        p.add_argument("--timeout", type=float, default=5.0, help="HTTP timeout seconds (default: 5.0)")
-
-    p_current = sub.add_parser("current", help="Current conditions at home")
-    add_common_flags(p_current)
-
-    p_forecast = sub.add_parser("forecast", help="Forecast at home (daily + hourly)")
-    add_common_flags(p_forecast)
-    p_forecast.add_argument("--days", type=int, default=10, help="Daily days to show (default: 10)")
-    p_forecast.add_argument("--hours", type=int, default=12, help="Hourly hours to show (default: 12)")
-
-    return parser
+def _better_forecast_url_with_token(station_id: int, device_id: str, token: str) -> str:
+    return (
+        f"{_base_url()}/swd/rest/better_forecast"
+        f"?station_id={station_id}"
+        f"&device_id={device_id}"
+        f"&token={token}"
+        f"&units_temp=f"
+        f"&units_wind=mph"
+        f"&units_pressure=inhg"
+        f"&units_precip=in"
+        f"&units_distance=mi"
+    )
 
 
-def print_help_and_exit(parser: argparse.ArgumentParser, code: int = 0) -> int:
-    parser.print_help(sys.stdout)
-    return code
+def _http_get_json(url: str, timeout_s: float = 6.0) -> Dict[str, Any]:
+    r = requests.get(url, timeout=timeout_s)
+    r.raise_for_status()
+    return r.json()
 
 
-def main(argv: list[str]) -> int:
-    parser = build_parser()
+def _fetch_better_forecast(api_key: str, station_id: int) -> Dict[str, Any]:
+    url = _better_forecast_url_with_api_key(station_id, api_key)
+    try:
+        return _http_get_json(url)
+    except Exception:
+        token = _env("TEMPEST_TOKEN")
+        device_id = _env("TEMPEST_DEVICE_ID")
+        if token and device_id:
+            url2 = _better_forecast_url_with_token(station_id, device_id, token)
+            return _http_get_json(url2)
+        raise
 
-    if len(argv) == 0:
-        return print_help_and_exit(parser, 0)
 
-    # Custom “unknown command” in red
-    if argv and not argv[0].startswith("-") and argv[0] not in {"current", "forecast"}:
-        eprint(f"{ANSI_RED}error:{ANSI_RESET} unknown command {argv[0]!r}")
-        eprint("")
-        return print_help_and_exit(parser, 2)
+# ----------------------------
+# Renderers
+# ----------------------------
 
-    args = parser.parse_args(argv)
+def _render_current_from_better_forecast(bf: Dict[str, Any]) -> List[str]:
+    cc = bf.get("current_conditions") or {}
+    lines: List[str] = []
 
-    api_key = get_api_key()
-    if not api_key:
-        eprint(f"{ANSI_RED}error:{ANSI_RESET} {API_KEY_ENV} is not set")
-        return 3
+    temp = _coerce_float(cc.get("air_temperature"))
+    chill = _coerce_float(cc.get("feels_like"))
+    wind = _coerce_float(cc.get("wind_avg"))
+    wind_dir_deg = _coerce_float(cc.get("wind_direction"))
+    rh = _coerce_float(cc.get("relative_humidity"))
+    pres = _coerce_float(cc.get("sea_level_pressure") or cc.get("barometric_pressure") or cc.get("pressure"))
+    precip = _coerce_float(cc.get("precip_accum_local_day") or cc.get("precip_accumulated") or cc.get("precip"))
+    uv = _coerce_float(cc.get("uv"))
 
-    station_id = get_station_id()
+    # If pressure looks like mb (e.g., 986), convert to inHg.
+    pres_inhg: Optional[float] = None
+    if pres is not None:
+        pres_inhg = pres if pres < 60 else _inhg_from_mb(pres)
+
+    if temp is not None:
+        lines.append(f"Temperature: {temp:.1f} °F")
+    if chill is not None:
+        lines.append(f"Wind Chill: {chill:.1f} °F")
+    if wind is not None:
+        wd = _deg_to_cardinal(wind_dir_deg or 0.0)
+        lines.append(f"Wind: {wind:.0f} mph {wd}")
+    if rh is not None:
+        lines.append(f"Humidity: {rh:.0f} %")
+    if pres_inhg is not None:
+        lines.append(f"Pressure: {pres_inhg:.2f} inHg")
+    if precip is not None:
+        # If inches were requested, this is inches. If it looks like mm, convert.
+        precip_in = precip if precip < 10 else _in_from_mm(precip)
+        lines.append(f"Precipitation: {precip_in:.2f} in")
+    if uv is not None:
+        lines.append(f"UV Index: {uv:.1f}")
+
+    # Sunrise/Sunset from daily forecast
+    sunrise = None
+    sunset = None
+    forecast = bf.get("forecast") or {}
+    daily = forecast.get("daily") or []
+    if isinstance(daily, list) and daily:
+        for d in daily[:3]:
+            if not isinstance(d, dict):
+                continue
+            sunrise = sunrise or _coerce_int(d.get("sunrise") or d.get("sunrise_ts") or d.get("sunrise_time"))
+            sunset = sunset or _coerce_int(d.get("sunset") or d.get("sunset_ts") or d.get("sunset_time"))
+            if sunrise and sunset:
+                break
+
+    sr = _fmt_time_hm(sunrise)
+    ss = _fmt_time_hm(sunset)
+    if sr:
+        lines.append(f"Sunrise: {sr}")
+    if ss:
+        lines.append(f"Sunset: {ss}")
+
+    lines.append(f"Updated: {_now_local_stamp()}")
+    return lines
+
+
+def _render_forecast_text(
+    bf: Dict[str, Any],
+    show_daily: bool,
+    show_hourly: bool,
+    days_n: int,
+    hours_n: int,
+) -> List[str]:
+    forecast = bf.get("forecast") or {}
+    daily = forecast.get("daily") or []
+    hourly = forecast.get("hourly") or []
+
+    lines: List[str] = []
+
+    if show_daily:
+        lines.append("Daily:")
+        if isinstance(daily, list) and daily:
+            for d in daily[: max(0, days_n)]:
+                if not isinstance(d, dict):
+                    continue
+                day_label = _day_label_from_epoch(_coerce_int(d.get("day_start_local") or d.get("day_start") or d.get("time")))
+                hi = _coerce_float(d.get("air_temp_high"))
+                lo = _coerce_float(d.get("air_temp_low"))
+                cond = d.get("conditions") or d.get("condition") or "—"
+
+                # IMPORTANT: do NOT do temp unit guessing here.
+                # We force units_temp=f in the request; heuristic conversion caused 50°F -> 122°F bugs.
+                if hi is not None and lo is not None:
+                    lines.append(f"{day_label}: High {hi:.0f}° / Low {lo:.0f}° — {cond}")
+                elif hi is not None:
+                    lines.append(f"{day_label}: High {hi:.0f}° — {cond}")
+                elif lo is not None:
+                    lines.append(f"{day_label}: Low {lo:.0f}° — {cond}")
+                else:
+                    lines.append(f"{day_label}: {cond}")
+        else:
+            lines.append("(no daily forecast data)")
+
+    if show_hourly:
+        if lines:
+            lines.append("")
+        lines.append("Hourly:")
+        if isinstance(hourly, list) and hourly:
+            for h in hourly[: max(0, hours_n)]:
+                if not isinstance(h, dict):
+                    continue
+                ts = _coerce_int(h.get("time") or h.get("time_local") or h.get("ts"))
+                dt = datetime.fromtimestamp(ts).astimezone() if ts else None
+                if dt:
+                    try:
+                        label = dt.strftime("%-I %p")
+                    except Exception:
+                        label = dt.strftime("%I %p").lstrip("0")
+                else:
+                    label = "(hour)"
+
+                temp = _coerce_float(h.get("air_temperature"))
+                wind = _coerce_float(h.get("wind_avg"))
+                wind_dir = _coerce_float(h.get("wind_direction"))
+                cond = h.get("conditions") or h.get("condition") or ""
+
+                # IMPORTANT: do NOT do temp unit guessing here (prevents double conversion).
+                # Wind: request is mph, but if m/s leaks through (small values), convert heuristically.
+                if wind is not None and wind < 25 and (h.get("units_wind") in (None, "", "mps")):
+                    wind = _mph_from_mps(wind)
+
+                wd = _deg_to_cardinal(wind_dir or 0.0)
+
+                if temp is not None and wind is not None:
+                    lines.append(f"{label}: {temp:.0f}° {wind:.0f} mph {wd} — {cond}".rstrip())
+                elif temp is not None:
+                    lines.append(f"{label}: {temp:.0f}° — {cond}".rstrip())
+                else:
+                    lines.append(f"{label}: — {cond}".rstrip())
+        else:
+            lines.append("(no hourly forecast data)")
+
+    lines.append(f"Updated: {_now_local_stamp()}")
+    return lines
+
+
+# ----------------------------
+# CLI
+# ----------------------------
+
+def _print_error(msg: str) -> int:
+    sys.stderr.write(f"{RED}error:{RESET} {msg}\n")
+    return 2
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="tempest-cli",
+        description="Tempest CLI: current conditions and forecast from a Tempest (WeatherFlow) station.",
+        add_help=True,
+    )
+    sub = p.add_subparsers(dest="command")
+
+    p_cur = sub.add_parser("current", help="Show current conditions.")
+    p_cur.add_argument("--raw", action="store_true", help="Print formatted current conditions (default).")
+    p_cur.add_argument("--json", action="store_true", help="Dump the full API JSON used for current.")
+
+    p_fc = sub.add_parser("forecast", help="Show forecast (daily + hourly).")
+    p_fc.add_argument("--raw", action="store_true", help="Print formatted forecast text output (default).")
+    p_fc.add_argument("--json", action="store_true", help="Dump the full forecast API JSON.")
+    p_fc.add_argument("--daily", action="store_true", help="Show daily section only.")
+    p_fc.add_argument("--hourly", action="store_true", help="Show hourly section only.")
+    p_fc.add_argument("--days", type=int, default=10, help="How many daily entries to display (default: 10).")
+    p_fc.add_argument("--hours", type=int, default=12, help="How many hourly entries to display (default: 12).")
+
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    argv = argv if argv is not None else sys.argv[1:]
+    parser = _build_parser()
+
+    if not argv:
+        parser.print_help()
+        return 0
+
+    args, extra = parser.parse_known_args(argv)
+    if extra:
+        return _print_error(f"unknown command '{extra[0]}'")
 
     try:
-        if args.command == "current":
-            url = tempest_station_observations_url(station_id, api_key)
-            res = http_get_json(url, timeout_s=args.timeout)
-
-            if args.json:
-                print(json.dumps(res.json_data, indent=2, sort_keys=True))
-                return 0
-
-            lines = format_current_from_observations(res.json_data)
-
-            # Output rules:
-            # - no modifier => include leading sentence
-            # - --raw => no sentence
-            if not args.raw:
-                print("The current conditions at your house are:")
-            for ln in lines:
-                print(ln)
-            print(f"Updated: {local_stamp()}")
-            return 0
-
-        if args.command == "forecast":
-            url = tempest_better_forecast_url(station_id, api_key)
-            res = http_get_json(url, timeout_s=args.timeout)
-
-            if args.json:
-                print(json.dumps(res.json_data, indent=2, sort_keys=True))
-                return 0
-
-            lines = format_forecast_from_better_forecast(res.json_data, days=args.days, hours=args.hours)
-
-            if not args.raw:
-                print("The forecast at your house is:")
-            for ln in lines:
-                print(ln)
-            print(f"Updated: {local_stamp()}")
-            return 0
-
-        # Should not happen due to earlier checks
-        return print_help_and_exit(parser, 2)
-
-    except requests.HTTPError as e:
-        eprint(f"{ANSI_RED}error:{ANSI_RESET} API request failed: {e}")
-        return 4
-    except requests.Timeout:
-        eprint(f"{ANSI_RED}error:{ANSI_RESET} API request timed out")
-        return 4
+        api_key = _required_env("TEMPEST_API_KEY")
+        station_id = _station_id()
     except Exception as e:
-        eprint(f"{ANSI_RED}error:{ANSI_RESET} {type(e).__name__}: {e}")
-        return 4
+        return _print_error(str(e))
+
+    cmd = args.command
+    try:
+        if cmd == "current":
+            bf = _fetch_better_forecast(api_key, station_id)
+
+            if getattr(args, "json", False):
+                print(json.dumps(bf, indent=2, sort_keys=True))
+                return 0
+
+            lines = _render_current_from_better_forecast(bf)
+            print("The current conditions at your house are:")
+            print("\n".join(lines))
+            return 0
+
+        if cmd == "forecast":
+            bf = _fetch_better_forecast(api_key, station_id)
+
+            if getattr(args, "json", False):
+                print(json.dumps(bf, indent=2, sort_keys=True))
+                return 0
+
+            daily_only = bool(getattr(args, "daily", False))
+            hourly_only = bool(getattr(args, "hourly", False))
+            show_daily = True
+            show_hourly = True
+            if daily_only and not hourly_only:
+                show_hourly = False
+            elif hourly_only and not daily_only:
+                show_daily = False
+
+            days_n = max(0, int(getattr(args, "days", 10)))
+            hours_n = max(0, int(getattr(args, "hours", 12)))
+
+            lines = _render_forecast_text(
+                bf,
+                show_daily=show_daily,
+                show_hourly=show_hourly,
+                days_n=days_n,
+                hours_n=hours_n,
+            )
+            print("The forecast at your house is:")
+            print("\n".join(lines))
+            return 0
+
+        return _print_error(f"unknown command '{cmd}'")
+
+    except requests.Timeout:
+        return _print_error("request timed out")
+    except requests.HTTPError as e:
+        return _print_error(f"http error: {e}")
+    except Exception as e:
+        return _print_error(str(e))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())
