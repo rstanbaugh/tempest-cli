@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.DS_Store
+
+# local debug output
+*.debug.txt
+debug.txt
+
+# local env files (keep secrets out of repos)
+.env
