@@ -35,6 +35,60 @@ except Exception:
 DOTENV_PATH = os.path.expanduser("~/.openclaw/.env")
 
 
+
+# ----------------------------
+# Sunrise / sunset fallback
+# ----------------------------
+
+def _coerce_epoch(v: Any) -> Optional[float]:
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
+def _pick_epoch(d: Any, keys: List[str]) -> Optional[float]:
+    if not isinstance(d, dict):
+        return None
+    for k in keys:
+        if k in d:
+            ts = _coerce_epoch(d.get(k))
+            if ts is not None:
+                return ts
+    return None
+
+
+def _find_sun_times_epoch(data: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """Return (sunrise_epoch, sunset_epoch) seconds if found in common locations."""
+    # 1) current_conditions (older API)
+    cc = data.get("current_conditions")
+    sunrise = _pick_epoch(cc, ["sunrise", "sunrise_ts", "sunrise_epoch"])
+    sunset = _pick_epoch(cc, ["sunset", "sunset_ts", "sunset_epoch"])
+    if sunrise is not None or sunset is not None:
+        return sunrise, sunset
+
+    # 2) forecast.daily[0] (common in forecast payloads)
+    fc = data.get("forecast")
+    if isinstance(fc, dict):
+        daily = fc.get("daily")
+        if isinstance(daily, list) and daily:
+            d0 = daily[0] if isinstance(daily[0], dict) else {}
+            sunrise = _pick_epoch(d0, ["sunrise", "sunrise_ts", "sunrise_epoch"])
+            sunset = _pick_epoch(d0, ["sunset", "sunset_ts", "sunset_epoch"])
+            if sunrise is not None or sunset is not None:
+                return sunrise, sunset
+
+    # 3) station/location blocks (varies)
+    station = data.get("station") or data.get("location")
+    if isinstance(station, list) and station:
+        station = station[0]
+    sunrise = _pick_epoch(station, ["sunrise", "sunrise_ts", "sunrise_epoch"])
+    sunset = _pick_epoch(station, ["sunset", "sunset_ts", "sunset_epoch"])
+    if sunrise is not None or sunset is not None:
+        return sunrise, sunset
+
+    return None, None
+
 # ----------------------------
 # Formatting helpers
 # ----------------------------
@@ -179,6 +233,10 @@ def _parse_current(data: Dict[str, Any]) -> List[str]:
     # Sunrise/Sunset (local times)
     sunrise = get_num("sunrise")
     sunset = get_num("sunset")
+
+    # Fallback if API no longer includes sunrise/sunset in current_conditions
+    if sunrise is None and sunset is None:
+        sunrise, sunset = _find_sun_times_epoch(data)
 
     # The API commonly returns unix epoch seconds for sunrise/sunset.
     # Convert to local time if plausible.
@@ -348,13 +406,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         build_parser().print_help(sys.stdout)
         return 0
 
-    # Catch unknown "command" early to give a clean error
-    # (argparse does this too, but you asked for `error: unknown command 'xxx'`)
-    known_cmds = {"current", "forecast", "-h", "--help"}
-    first = argv[0]
-    if first.startswith("-") is False and first not in known_cmds:
-        sys.stderr.write(_red(f"error: unknown command '{first}'") + "\n")
-        return 2
+        # Allow global flags (--raw/--json/--timeout) anywhere (before or after subcommand).
+    # argparse only guarantees global options work before the subcommand, so we normalize argv.
+    def _normalize_argv(a: List[str]) -> List[str]:
+        globals_: List[str] = []
+        rest: List[str] = []
+        i = 0
+        while i < len(a):
+            tok = a[i]
+            if tok in ("--raw", "--json"):
+                globals_.append(tok)
+                i += 1
+                continue
+            if tok == "--timeout":
+                if i + 1 >= len(a):
+                    rest.append(tok)
+                    i += 1
+                    continue
+                globals_.extend([tok, a[i + 1]])
+                i += 2
+                continue
+            if tok.startswith("--timeout="):
+                globals_.append(tok)
+                i += 1
+                continue
+            rest.append(tok)
+            i += 1
+        return globals_ + rest
+
+    argv = _normalize_argv(argv)
 
     args = build_parser().parse_args(argv)
 
