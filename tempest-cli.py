@@ -194,6 +194,10 @@ def _parse_current(data: Dict[str, Any]) -> List[str]:
         v = cc.get(k)
         return str(v) if v is not None else None
 
+    conditions = get_str("conditions") or get_str("condition")
+    if conditions:
+        lines.append(f"Current Conditions: {conditions}")
+
     temp = get_num("air_temperature")
     if temp is not None:
         lines.append(f"Temperature: {temp:.1f} °F")
