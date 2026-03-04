@@ -196,43 +196,60 @@ def _parse_current(data: Dict[str, Any]) -> List[str]:
 
     conditions = get_str("conditions") or get_str("condition")
     if conditions:
-        lines.append(f"Current Conditions: {conditions}")
+        lines.append(f"Cond {conditions}")
 
     temp = get_num("air_temperature")
     if temp is not None:
-        lines.append(f"Temperature: {temp:.1f} °F")
+        lines.append(f"Temp {temp:.1f}°")
 
     chill = get_num("feels_like")
     if chill is not None:
-        lines.append(f"Wind Chill: {chill:.1f} °F")
+        lines.append(f"FeelsLike {chill:.1f}°")
 
     wind = get_num("wind_avg")
+    gust = get_num("wind_gust")
     wdir = get_str("wind_direction_cardinal") or get_str("wind_direction")
     if wind is not None:
-        # If wdir is numeric degrees, we just show it; if cardinal, show that.
-        if wdir and wdir.replace(".", "", 1).isdigit():
-            lines.append(f"Wind: {wind:.0f} mph {wdir}°")
-        elif wdir:
-            lines.append(f"Wind: {wind:.0f} mph {wdir}")
+        dir_s = ""
+        if wdir:
+            if wdir.replace(".", "", 1).isdigit():
+                dir_s = f"{wdir}°"
+            else:
+                dir_s = wdir
+
+        if dir_s and gust is not None:
+            lines.append(f"Wind {dir_s} {wind:.0f} G {gust:.0f} mph")
+        elif dir_s:
+            lines.append(f"Wind {dir_s} {wind:.0f} mph")
+        elif gust is not None:
+            lines.append(f"Wind {wind:.0f} G {gust:.0f} mph")
         else:
-            lines.append(f"Wind: {wind:.0f} mph")
+            lines.append(f"Wind {wind:.0f} mph")
 
     rh = get_num("relative_humidity")
     if rh is not None:
-        lines.append(f"Humidity: {rh:.0f} %")
+        lines.append(f"Humidity {rh:.0f}%")
 
     pres = get_num("sea_level_pressure")
     if pres is not None:
-        lines.append(f"Pressure: {pres:.2f} inHg")
+        lines.append(f"Pressure {pres:.2f} inHg")
 
     precip = get_num("precip_accum_local_day")
     if precip is not None:
-        lines.append(f"Precipitation: {precip:.2f} in")
+        lines.append(f"Precip {precip:.2f} in")
 
     uv = get_num("uv")
     if uv is not None:
         # uv is often 0.0–something; keep one decimal max like your examples
-        lines.append(f"UV Index: {uv:.1f}".rstrip("0").rstrip("."))
+        lines.append(f"UV {uv:.1f}".rstrip("0").rstrip("."))
+
+    solar_rad = get_num("solar_radiation")
+    if solar_rad is not None:
+        lines.append(f"SolarRad {solar_rad:.0f} W/m^2")
+
+    brightness = get_num("brightness")
+    if brightness is not None:
+        lines.append(f"Brightness {brightness:.0f} lux")
 
     # Sunrise/Sunset (local times)
     sunrise = get_num("sunrise")
@@ -249,12 +266,12 @@ def _parse_current(data: Dict[str, Any]) -> List[str]:
         return dt.strftime("%I:%M %p").lstrip("0")
 
     if sunrise is not None and sunrise > 10_000:  # crude guard
-        lines.append(f"Sunrise: {fmt_epoch_local(sunrise)}")
+        lines.append(f"Sunrise {fmt_epoch_local(sunrise)}")
     if sunset is not None and sunset > 10_000:
-        lines.append(f"Sunset: {fmt_epoch_local(sunset)}")
+        lines.append(f"Sunset {fmt_epoch_local(sunset)}")
 
     # Updated goes LAST (per your requirement)
-    lines.append(f"Updated: {_local_updated_stamp()}")
+    lines.append(f"Updated {_local_updated_stamp()}")
 
     return lines
 
@@ -270,6 +287,10 @@ def _parse_daily(data: Dict[str, Any], days: int = 10) -> List[str]:
     # API daily[0] is typically tomorrow (today+1). You wanted labels based on today+N.
     base_date = datetime.now().astimezone().date()
     take = min(days, len(daily))
+
+    def fmt_epoch_local(ts: float) -> str:
+        dt = datetime.fromtimestamp(ts).astimezone()
+        return dt.strftime("%I:%M %p").lstrip("0")
 
     for i in range(take):
         d = daily[i]
@@ -296,7 +317,7 @@ def _parse_daily(data: Dict[str, Any], days: int = 10) -> List[str]:
 
         precip_desc: Optional[str] = None
         if precip_probability_v is not None and precip_probability_v <= 0:
-            precip_desc = "Precipitation 0%"
+            precip_desc = "Precip"
         elif precip_type_raw and precip_type_raw != "none":
             precip_type = precip_type_raw.replace("_", " ").title()
             precip_desc = f"{precip_type} {precip_probability_s}%" if precip_probability_s is not None else precip_type
@@ -313,12 +334,24 @@ def _parse_daily(data: Dict[str, Any], days: int = 10) -> List[str]:
         except Exception:
             lo_s = ""
 
+        sunrise_s = ""
+        sunset_s = ""
+        sunrise = _coerce_epoch(d.get("sunrise"))
+        sunset = _coerce_epoch(d.get("sunset"))
+        if sunrise is not None and sunrise > 10_000:
+            sunrise_s = f"Sunrise {fmt_epoch_local(sunrise)}"
+        if sunset is not None and sunset > 10_000:
+            sunset_s = f"Sunset {fmt_epoch_local(sunset)}"
+
+        sun_parts = ", ".join(part for part in [sunrise_s, sunset_s] if part)
+        sun_suffix = f", {sun_parts}" if sun_parts else ""
+
         if hi_s and lo_s:
-            out.append(f"{label}  High {hi_s} - Low {lo_s}, {cond_with_precip}")
+            out.append(f"{label}  Hi {hi_s} - Lo {lo_s}, {cond_with_precip}{sun_suffix}")
         elif lo_s:
-            out.append(f"{label}  Low {lo_s}, {cond_with_precip}")
+            out.append(f"{label}  Lo {lo_s}, {cond_with_precip}{sun_suffix}")
         else:
-            out.append(f"{label}, {cond_with_precip}")
+            out.append(f"{label}, {cond_with_precip}{sun_suffix}")
 
     return out
 
@@ -369,7 +402,7 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
 
         precip_desc: Optional[str] = None
         if precip_probability_v is not None and precip_probability_v <= 0:
-            precip_desc = "Precipitation 0%"
+            precip_desc = "Precip"
         elif precip_type_raw and precip_type_raw != "none":
             precip_type = precip_type_raw.replace("_", " ").title()
             precip_desc = f"{precip_type} {precip_probability_s}%" if precip_probability_s is not None else precip_type
@@ -385,16 +418,30 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
             wind_s = f"{float(wind):.0f} mph" if wind is not None else ""
         except Exception:
             wind_s = ""
+        try:
+            feels_like_s = f"FeelsLike {float(h.get('feels_like')):.0f}°" if h.get("feels_like") is not None else ""
+        except Exception:
+            feels_like_s = ""
+        try:
+            precip_amt_s = f"Precip {float(h.get('precip')):.2f} in" if h.get("precip") is not None else ""
+        except Exception:
+            precip_amt_s = ""
         wdir_s = ""
         if wdir is not None:
             wdir_s = str(wdir)
 
         if wind_s and wdir_s:
-            out.append(f"{dlabel} {tlabel} {temp_s} {wind_s} {wdir_s}, {cond_with_precip}".rstrip())
+            extras = " ".join(part for part in [feels_like_s, precip_amt_s] if part)
+            extra_prefix = f" {extras}" if extras else ""
+            out.append(f"{dlabel} {tlabel} {temp_s}{extra_prefix} {wind_s} {wdir_s}, {cond_with_precip}".rstrip())
         elif wind_s:
-            out.append(f"{dlabel} {tlabel} {temp_s} {wind_s}, {cond_with_precip}".rstrip())
+            extras = " ".join(part for part in [feels_like_s, precip_amt_s] if part)
+            extra_prefix = f" {extras}" if extras else ""
+            out.append(f"{dlabel} {tlabel} {temp_s}{extra_prefix} {wind_s}, {cond_with_precip}".rstrip())
         else:
-            out.append(f"{dlabel} {tlabel} {temp_s}, {cond_with_precip}".rstrip())
+            extras = " ".join(part for part in [feels_like_s, precip_amt_s] if part)
+            extra_prefix = f" {extras}" if extras else ""
+            out.append(f"{dlabel} {tlabel} {temp_s}{extra_prefix}, {cond_with_precip}".rstrip())
 
     return out
 
