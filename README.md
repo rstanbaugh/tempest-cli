@@ -154,7 +154,7 @@ Daily:
 ...
 
 Hourly:
-<Day> <h AM/PM> <temp>° [FeelsLike <n>°] [Precip <n.nn> in] [<wind> mph] [<dir>], <Conditions>[, <PrecipType p%>|Precip]
+<Day> <h AM/PM> <temp>° [FeelsLike <n>°] [Precip <n.nn>"] [Wind <dir> <n> mph|Wind <dir> <n> G<g> mph], <Conditions>[, <PrecipType p%>|Precip]
 ...
 Updated: <h:mm:ss AM/PM  m/d/YYYY>
 ```
@@ -268,8 +268,8 @@ Practical approach:
 2. For non-anchor lines, branch by command context (`current` vs `forecast`).
 3. Parse tokens left-to-right, treating optional groups as nullable:
 	 - `FeelsLike`
-	 - `Precip <amount> in`
-	 - wind speed and direction
+	 - `Precip <amount>"`
+	 - `Wind <dir> <speed> [G<gust>] mph`
 	 - precip descriptors appended to condition text
 
 ### 10.3 Stability notes

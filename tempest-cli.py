@@ -386,6 +386,7 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
 
         temp = h.get("air_temperature")
         wind = h.get("wind_avg")
+        gust = h.get("wind_gust")
         wdir = h.get("wind_direction_cardinal") or h.get("wind_direction")
         cond = h.get("conditions") or h.get("condition") or "—"
         precip_type_raw = str(h.get("precip_type") or "").strip().lower()
@@ -415,26 +416,37 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
         except Exception:
             temp_s = "—"
         try:
-            wind_s = f"{float(wind):.0f} mph" if wind is not None else ""
+            wind_v = float(wind) if wind is not None else None
         except Exception:
-            wind_s = ""
+            wind_v = None
+        try:
+            gust_v = float(gust) if gust is not None else None
+        except Exception:
+            gust_v = None
         try:
             feels_like_s = f"FeelsLike {float(h.get('feels_like')):.0f}°" if h.get("feels_like") is not None else ""
         except Exception:
             feels_like_s = ""
         try:
-            precip_amt_s = f"Precip {float(h.get('precip')):.2f} in" if h.get("precip") is not None else ""
+            precip_amt_s = f"Precip {float(h.get('precip')):.2f}\"" if h.get("precip") is not None else ""
         except Exception:
             precip_amt_s = ""
         wdir_s = ""
         if wdir is not None:
             wdir_s = str(wdir)
 
-        if wind_s and wdir_s:
-            extras = " ".join(part for part in [feels_like_s, precip_amt_s] if part)
-            extra_prefix = f" {extras}" if extras else ""
-            out.append(f"{dlabel} {tlabel} {temp_s}{extra_prefix} {wind_s} {wdir_s}, {cond_with_precip}".rstrip())
-        elif wind_s:
+        wind_s = ""
+        if wind_v is not None:
+            if wdir_s and gust_v is not None:
+                wind_s = f"Wind {wdir_s} {wind_v:.0f} G{gust_v:.0f} mph"
+            elif wdir_s:
+                wind_s = f"Wind {wdir_s} {wind_v:.0f} mph"
+            elif gust_v is not None:
+                wind_s = f"Wind {wind_v:.0f} G{gust_v:.0f} mph"
+            else:
+                wind_s = f"Wind {wind_v:.0f} mph"
+
+        if wind_s:
             extras = " ".join(part for part in [feels_like_s, precip_amt_s] if part)
             extra_prefix = f" {extras}" if extras else ""
             out.append(f"{dlabel} {tlabel} {temp_s}{extra_prefix} {wind_s}, {cond_with_precip}".rstrip())
