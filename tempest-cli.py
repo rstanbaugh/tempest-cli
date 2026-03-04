@@ -282,6 +282,26 @@ def _parse_daily(data: Dict[str, Any], days: int = 10) -> List[str]:
         hi = d.get("air_temp_high")
         lo = d.get("air_temp_low")
         cond = d.get("conditions") or d.get("condition") or "—"
+        precip_type_raw = str(d.get("precip_type") or "").strip().lower()
+        precip_probability = d.get("precip_probability")
+        precip_probability_v: Optional[float] = None
+        precip_probability_s: Optional[str] = None
+        try:
+            if precip_probability is not None:
+                precip_probability_v = float(precip_probability)
+                precip_probability_s = f"{precip_probability_v:.0f}"
+        except Exception:
+            precip_probability_v = None
+            precip_probability_s = None
+
+        precip_desc: Optional[str] = None
+        if precip_probability_v is not None and precip_probability_v <= 0:
+            precip_desc = "No Precipitation"
+        elif precip_type_raw and precip_type_raw != "none":
+            precip_type = precip_type_raw.replace("_", " ").title()
+            precip_desc = f"{precip_type} {precip_probability_s}%" if precip_probability_s is not None else precip_type
+
+        cond_with_precip = f"{cond} - {precip_desc}" if precip_desc else cond
 
         # temps already °F because units_temp=f
         try:
@@ -294,11 +314,11 @@ def _parse_daily(data: Dict[str, Any], days: int = 10) -> List[str]:
             lo_s = ""
 
         if hi_s and lo_s:
-            out.append(f"{label}: High {hi_s} / Low {lo_s} — {cond}")
+            out.append(f"{label}: High {hi_s} / Low {lo_s} — {cond_with_precip}")
         elif lo_s:
-            out.append(f"{label}: Low {lo_s} — {cond}")
+            out.append(f"{label}: Low {lo_s} — {cond_with_precip}")
         else:
-            out.append(f"{label}: — {cond}")
+            out.append(f"{label}: — {cond_with_precip}")
 
     return out
 
@@ -333,7 +353,27 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
         temp = h.get("air_temperature")
         wind = h.get("wind_avg")
         wdir = h.get("wind_direction_cardinal") or h.get("wind_direction")
-        cond = h.get("conditions") or h.get("condition") or ""
+        cond = h.get("conditions") or h.get("condition") or "—"
+        precip_type_raw = str(h.get("precip_type") or "").strip().lower()
+        precip_probability = h.get("precip_probability")
+        precip_probability_v: Optional[float] = None
+        precip_probability_s: Optional[str] = None
+        try:
+            if precip_probability is not None:
+                precip_probability_v = float(precip_probability)
+                precip_probability_s = f"{precip_probability_v:.0f}"
+        except Exception:
+            precip_probability_v = None
+            precip_probability_s = None
+
+        precip_desc: Optional[str] = None
+        if precip_probability_v is not None and precip_probability_v <= 0:
+            precip_desc = "No Precipitation"
+        elif precip_type_raw and precip_type_raw != "none":
+            precip_type = precip_type_raw.replace("_", " ").title()
+            precip_desc = f"{precip_type} {precip_probability_s}%" if precip_probability_s is not None else precip_type
+
+        cond_with_precip = f"{cond} - {precip_desc}" if precip_desc else cond
 
         # temps already °F, wind already mph
         try:
@@ -349,11 +389,11 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
             wdir_s = str(wdir)
 
         if wind_s and wdir_s:
-            out.append(f"{tlabel}: {temp_s} {wind_s} {wdir_s} — {cond}".rstrip())
+            out.append(f"{tlabel}: {temp_s} {wind_s} {wdir_s} — {cond_with_precip}".rstrip())
         elif wind_s:
-            out.append(f"{tlabel}: {temp_s} {wind_s} — {cond}".rstrip())
+            out.append(f"{tlabel}: {temp_s} {wind_s} — {cond_with_precip}".rstrip())
         else:
-            out.append(f"{tlabel}: {temp_s} — {cond}".rstrip())
+            out.append(f"{tlabel}: {temp_s} — {cond_with_precip}".rstrip())
 
     return out
 
