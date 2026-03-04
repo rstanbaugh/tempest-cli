@@ -34,7 +34,7 @@ Example `.env`:
 
 ```bash
 TEMPEST_API_KEY=your_token_here
-TEMPEST_STATION_ID=161526
+TEMPEST_STATION_ID=XXXXX
 TEMPEST_TIMEOUT_S=8
 ```
 
