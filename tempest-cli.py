@@ -296,10 +296,10 @@ def _parse_daily(data: Dict[str, Any], days: int = 10) -> List[str]:
 
         precip_desc: Optional[str] = None
         if precip_probability_v is not None and precip_probability_v <= 0:
-            precip_desc = "Chance of Precipitation 0%"
+            precip_desc = "Precipitation 0%"
         elif precip_type_raw and precip_type_raw != "none":
             precip_type = precip_type_raw.replace("_", " ").title()
-            precip_desc = f"Chance of {precip_type} {precip_probability_s}%" if precip_probability_s is not None else f"Chance of {precip_type}"
+            precip_desc = f"{precip_type} {precip_probability_s}%" if precip_probability_s is not None else precip_type
 
         cond_with_precip = f"{cond}, {precip_desc}" if precip_desc else cond
 
@@ -369,10 +369,10 @@ def _parse_hourly(data: Dict[str, Any], hours: int = 12) -> List[str]:
 
         precip_desc: Optional[str] = None
         if precip_probability_v is not None and precip_probability_v <= 0:
-            precip_desc = "Chance of Precipitation 0%"
+            precip_desc = "Precipitation 0%"
         elif precip_type_raw and precip_type_raw != "none":
             precip_type = precip_type_raw.replace("_", " ").title()
-            precip_desc = f"Chance of {precip_type} {precip_probability_s}%" if precip_probability_s is not None else f"Chance of {precip_type}"
+            precip_desc = f"{precip_type} {precip_probability_s}%" if precip_probability_s is not None else precip_type
 
         cond_with_precip = f"{cond}, {precip_desc}" if precip_desc else cond
 
