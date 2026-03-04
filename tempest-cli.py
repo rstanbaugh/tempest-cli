@@ -241,7 +241,7 @@ def _parse_current(data: Dict[str, Any]) -> List[str]:
     uv = get_num("uv")
     if uv is not None:
         # uv is often 0.0–something; keep one decimal max like your examples
-        lines.append(f"UV {uv:.1f}".rstrip("0").rstrip("."))
+        lines.append(f"UV (index) {uv:.1f}".rstrip("0").rstrip("."))
 
     solar_rad = get_num("solar_radiation")
     if solar_rad is not None:
